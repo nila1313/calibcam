@@ -1,8 +1,4 @@
-import hashlib
 import multiprocessing
-from pathlib import Path
-
-import cv2
 import numpy as np
 import yaml
 from ccvtools import rawio  # noqa
@@ -10,112 +6,8 @@ from joblib import Parallel, delayed
 from svidreader import filtergraph
 
 from calibcam import camfunctions, helper
-from calibcam.calibrator_opts import finalize_aruco_detector_opts
+from calibcam.detection_methods import get_detection_method
 from calibcamlib import Board, Detections
-
-
-def _normalize_nanodeep_config_paths(config):
-    """Normalize NanoDeepCharuco path options for serialization."""
-    path_keys = (
-        "project_root",
-        "nano_executable",
-        "deep_checkpoint",
-        "refinenet_checkpoint",
-        "config_path",
-        "work_dir",
-    )
-
-    for key in path_keys:
-        if config.get(key):
-            config[key] = str(config[key])
-
-    return config
-
-
-def _build_nanodeep_detector(board, config):
-    """Initialize the optional NanoDeepCharuco detector when selected."""
-    config = _normalize_nanodeep_config_paths(config)
-    required = (
-        "project_root",
-        "nano_executable",
-        "deep_checkpoint",
-        "refinenet_checkpoint",
-        "work_dir",
-    )
-
-    missing = [
-        key for key in required
-        if not config.get(key)
-    ]
-
-    if missing:
-        raise ValueError(
-            "NanoDeepCharuco backend is missing required options: "
-            + ", ".join(missing)
-        )
-
-    try:
-        from nanodeepcharuco.detection.deep_charuco import (
-            DeepCharucoDetector,
-        )
-        from nanodeepcharuco.detection.nanodeepcharuco import (
-            NanoDeepCharucoDetector,
-        )
-    except ImportError as exc:
-        raise ImportError(
-            "NanoDeepCharuco backend requires the optional "
-            "nanodeepcharuco dependencies"
-        ) from exc
-
-    deep = DeepCharucoDetector(
-        project_root=config["project_root"],
-        deep_checkpoint=config["deep_checkpoint"],
-        refinenet_checkpoint=config["refinenet_checkpoint"],
-        config_path=config.get("config_path") or None,
-        device=config.get("device") or None,
-    ).load()
-
-    return NanoDeepCharucoDetector(
-        board_path=None,
-        nano_executable=config["nano_executable"],
-        deep_detector=deep,
-        work_dir=config["work_dir"],
-        keep_work=config.get("keep_work", False),
-        board_params=board.get_board_params(),
-    )
-
-
-def _nanodeep_frame_prefix(video):
-    """Return a stable per-video prefix for NanoDeepCharuco work files."""
-    video_path = Path(video).expanduser().resolve()
-    digest = hashlib.sha256(
-        str(video_path).encode("utf-8")
-    ).hexdigest()[:10]
-
-    return f"{video_path.stem}_{digest}"
-
-
-def _nanodeep_corners_to_charuco(corners_by_id):
-    """Convert NanoDeepCharuco corner mapping to OpenCV ChArUco arrays."""
-    if not corners_by_id:
-        return None, None
-
-    corner_ids = sorted(corners_by_id)
-
-    charuco_corners = np.asarray(
-        [
-            np.asarray(corners_by_id[corner_id], dtype=np.float32).reshape(2)
-            for corner_id in corner_ids
-        ],
-        dtype=np.float32,
-    ).reshape(-1, 1, 2)
-
-    charuco_ids = np.asarray(
-        corner_ids,
-        dtype=np.int32,
-    ).reshape(-1, 1)
-
-    return charuco_corners, charuco_ids
 
 
 def detect_corners(rec_file_names, boards, opts, rec_pipelines=None):
@@ -188,22 +80,13 @@ def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None
     board_params = board.get_board_params()
     board_start_id = board.get_board_ids()[0]
 
-    detection_backend = opts['detection_opts'].get('backend', 'opencv')
-
-    if detection_backend not in ('opencv', 'nanodeepcharuco'):
-        raise ValueError(
-            f"Unsupported detection backend: {detection_backend!r}"
-        )
-
-    nanodeep_detector = None
-    nanodeep_frame_prefix = None
-
-    if detection_backend == 'nanodeepcharuco':
-        nanodeep_detector = _build_nanodeep_detector(
-            board,
-            opts['detection_opts']['nanodeepcharuco'],
-        )
-        nanodeep_frame_prefix = _nanodeep_frame_prefix(video)
+    detection_backend = opts["detection_opts"].get("backend", "opencv")
+    detection_method = get_detection_method(detection_backend)
+    detection_context = detection_method.create_context(
+        video,
+        board,
+        opts,
+    )
 
     reader = filtergraph.get_reader(video, backend="iio", cache=False)
     if rec_pipeline is not None:
@@ -233,88 +116,14 @@ def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None
 
         frame = reader.get_data(frame_idx)
 
-        if detection_backend == 'nanodeepcharuco':
-            frame_tag = (
-                f"{nanodeep_frame_prefix}_"
-                f"{int(frame_idx):08d}"
-            )
+        charuco_corners, charuco_ids = detection_method.detect_frame(
+            frame,
+            frame_idx,
+            detection_context,
+        )
 
-            nanodeep_result = nanodeep_detector.process_frame(
-                frame,
-                frame_tag,
-            )
-
-            charuco_corners, charuco_ids = (
-                _nanodeep_corners_to_charuco(
-                    nanodeep_result.corners
-                )
-            )
-
-            if charuco_corners is None:
-                continue
-
-        else:
-            if opts.get("gamma_correction", None) is not None:  # TODO: Generalize this
-                frame -= np.min(frame)
-                frame = frame.astype(np.float64)
-                frame /= np.max(frame)
-                frame = np.sqrt(frame)
-                frame = (frame * 255).astype(np.uint8)
-
-            if opts['detection_opts']['clahe']:
-                if frame.dtype != np.uint8:
-                    frame8 = cv2.convertScaleAbs(frame, alpha=255.0 / frame.max())
-                else:
-                    frame8 = frame
-
-                if frame8.ndim>2:
-                    lab = cv2.cvtColor(frame8, cv2.COLOR_BGR2LAB)
-                    l = cv2.split(lab)[0]
-                else:
-                    l = frame8
-
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                frame = clahe.apply(l)
-
-            # color management
-            if not isinstance(opts['color_convert'], bool) and len(frame.shape) > 2:
-                frame = cv2.cvtColor(frame, opts['color_convert'])  # noqa
-
-            dictionary = cv2.aruco.getPredefinedDictionary(board_params["dictionary_type"])
-            parameters = finalize_aruco_detector_opts(opts['detection_opts']['aruco_detect'])
-
-            detector = cv2.aruco.ArucoDetector(dictionary, parameters["parameters"])
-
-            # corner detection
-            corners, ids, rejected_img_points = detector.detectMarkers(frame)
-            # corners, ids, rejected_img_points = \
-            #     cv2.aruco.detectMarkers(frame,  # noqa
-            #                             cv2.aruco.getPredefinedDictionary(board_params['dictionary_type']),  # noqa
-            #                             )
-
-            if len(corners) == 0:
-                continue
-
-            board_obj = board.get_cv2_board()
-
-            # corner refinement
-            corners_ref, ids_ref = \
-                cv2.aruco.refineDetectedMarkers(frame,  # noqa
-                                                board_obj,
-                                                corners,
-                                                ids,
-                                                rejected_img_points,
-                                                **finalize_aruco_detector_opts(opts['detection_opts']['aruco_refine']))[0:2]
-
-            # corner interpolation
-            retval, charuco_corners, charuco_ids = \
-                cv2.aruco.interpolateCornersCharuco(corners_ref,  # noqa
-                                                    ids_ref,
-                                                    frame,
-                                                    board_obj,
-                                                    **opts['detection_opts']['aruco_interpolate'])
-            if charuco_corners is None:
-                continue
+        if charuco_corners is None:
+            continue
 
         if opts['RC_reject_corners']:
             # Reject corners based on radial contrast value

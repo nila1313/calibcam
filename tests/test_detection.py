@@ -13,11 +13,11 @@ from scipy.io import savemat
 
 from calibcam import helper
 from calibcam.calibrator_opts import get_default_opts
-from calibcam.detection import (
+from calibcam.detection import detect_corners_cam
+from calibcam.detection_methods.nanodeepcharuco import (
     _nanodeep_corners_to_charuco,
     _nanodeep_frame_prefix,
     _normalize_nanodeep_config_paths,
-    detect_corners_cam,
 )
 from calibcamlib import Board, Detections
 
@@ -265,7 +265,7 @@ class TestDetection(unittest.TestCase):
 
         with (
             patch(
-                "calibcam.detection._build_nanodeep_detector",
+                "calibcam.detection_methods.nanodeepcharuco._build_nanodeep_detector",
                 return_value=fake_detector,
             ) as build_detector,
             patch(
