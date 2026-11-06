@@ -19,7 +19,7 @@ def detect_frame(frame, frame_idx, context):
     board_params = context["board_params"]
     opts = context["opts"]
 
-    if opts.get("gamma_correction", None) is not None:
+    if opts.get("gamma_correction", None) is not None:  # TODO: Generalize this
         frame -= np.min(frame)
         frame = frame.astype(np.float64)
         frame /= np.max(frame)
@@ -50,6 +50,7 @@ def detect_frame(frame, frame_idx, context):
         )
         frame = clahe.apply(l_channel)
 
+    # color management
     if (
         not isinstance(opts["color_convert"], bool)
         and len(frame.shape) > 2
@@ -71,6 +72,7 @@ def detect_frame(frame, frame_idx, context):
         parameters["parameters"],
     )
 
+    # corner detection
     corners, ids, rejected_img_points = detector.detectMarkers(
         frame
     )
@@ -80,6 +82,7 @@ def detect_frame(frame, frame_idx, context):
 
     board_obj = board.get_cv2_board()
 
+    # corner refinement
     corners_ref, ids_ref = cv2.aruco.refineDetectedMarkers(
         frame,
         board_obj,
@@ -91,6 +94,7 @@ def detect_frame(frame, frame_idx, context):
         ),
     )[0:2]
 
+    # corner interpolation
     _, charuco_corners, charuco_ids = (
         cv2.aruco.interpolateCornersCharuco(
             corners_ref,
