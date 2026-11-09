@@ -273,7 +273,11 @@ def build_args_into_opts(opts, args, n_cams):
 
 def define_process_stages(args, opts):
     # Deal with process parameters
-    if not any([args.detection, args.calibration_single, args.calibration_multi]):
+    if (
+        args.detection is False
+        and args.calibration_single is False
+        and args.calibration_multi is False
+    ):
         # No parameter has been set, which is interpreted as all desired
         args.detection, args.calibration_single, args.calibration_multi = (
             True,
@@ -308,6 +312,7 @@ def build_options(args, n_cams):
         opts = helper.deepmerge_dicts(file_opts, opts)
 
     opts = build_args_into_opts(opts, args, n_cams)
+    opts = calibrator_opts.normalize_option_paths(opts)
 
     # Write options to file for later editing.
     if isinstance(args.write_opts[0], str):

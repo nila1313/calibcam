@@ -1,6 +1,8 @@
 import multiprocessing
+from copy import deepcopy
 from pathlib import Path
 
+import cv2
 import numpy as np
 import yaml
 from ccvtools import rawio  # noqa
@@ -8,12 +10,28 @@ from joblib import Parallel, delayed
 from svidreader import filtergraph
 
 from calibcam import camfunctions, helper
-from calibcam.detection_methods import get_detection_method
+from calibcam.detection_backends import DetectionBackend, get_detection_backend
 from calibcamlib import Board, Detections
 
 
 def detect_corners(rec_file_names, boards, opts, rec_pipelines=None):
     print('DETECTING FEATURES')
+    backend_name = opts["detection_opts"].get("backend", "opencv")
+    backend_class = get_detection_backend(backend_name)
+    if not isinstance(backend_class, type) or not issubclass(
+        backend_class, DetectionBackend
+    ):
+        raise TypeError(f"Invalid detection backend: {backend_name!r}")
+    backend = backend_class()
+    if backend_class.default_opts:
+        detection_opts = dict(opts["detection_opts"])
+        detection_opts[backend_name] = helper.deepmerge_dicts(
+            deepcopy(detection_opts.get(backend_name, {})),
+            deepcopy(backend_class.default_opts),
+        )
+        opts = dict(opts)
+        opts["detection_opts"] = detection_opts
+
     if isinstance(opts['frames_offsets'], bool):
         frames_offsets = np.zeros(len(rec_file_names))
     else:
@@ -66,10 +84,13 @@ def detect_corners(rec_file_names, boards, opts, rec_pipelines=None):
         for rec_file_name, brd, frames_list, offset, rec_pipeline \
                 in zip(rec_file_names, boards, frames_lists, frames_offsets, rec_pipelines):
             detections_cams.append(detect_corners_cam(
-                rec_file_name, opts, brd, frames_list, rec_pipeline=rec_pipeline))
+                rec_file_name, opts, brd, frames_list, rec_pipeline=rec_pipeline,
+                backend=backend))
     else:
         detections_cams = Parallel(n_jobs=int(np.floor(multiprocessing.cpu_count() // opts['detect_cpu_divisor'])))(
-            delayed(detect_corners_cam)(rec_file_name, opts, brd, frames_list, rec_pipeline=rec_pipeline)
+            delayed(detect_corners_cam)(
+                rec_file_name, opts, brd, frames_list, rec_pipeline=rec_pipeline,
+                backend=backend)
             for rec_file_name, brd, frames_list, offset, rec_pipeline
             in zip(rec_file_names, boards, frames_lists, frames_offsets, rec_pipelines))
 
@@ -78,13 +99,14 @@ def detect_corners(rec_file_names, boards, opts, rec_pipelines=None):
     return detections
 
 
-def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None):
+def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None, backend=None):
     board_params = board.get_board_params()
     board_start_id = board.get_board_ids()[0]
 
-    detection_backend = opts["detection_opts"].get("backend", "opencv")
-    detection_method = get_detection_method(detection_backend)
-    detection_context = detection_method.create_context(
+    if backend is None:
+        backend_name = opts["detection_opts"].get("backend", "opencv")
+        backend = get_detection_backend(backend_name)()
+    detection_context = backend.create_context(
         video,
         board,
         opts,
@@ -118,7 +140,10 @@ def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None
 
         frame = reader.get_data(frame_idx)
 
-        charuco_corners, charuco_ids = detection_method.detect_frame(
+        if backend.uses_preprocessing:
+            frame = preprocess_frame(frame, opts)
+
+        charuco_corners, charuco_ids = backend.detect_frame(
             frame,
             frame_idx,
             detection_context,
@@ -175,3 +200,34 @@ def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None
     }
 
     return Detections.from_list(markers_list)  # corners_cam, ids_cam, fin_frames_mask
+
+
+def preprocess_frame(frame, opts):
+    """Common frame preprocessing applied before detection backends that use it."""
+    if opts.get("gamma_correction", None) is not None:  # TODO: Generalize this
+        frame -= np.min(frame)
+        frame = frame.astype(np.float64)
+        frame /= np.max(frame)
+        frame = np.sqrt(frame)
+        frame = (frame * 255).astype(np.uint8)
+
+    if opts['detection_opts']['clahe']:
+        if frame.dtype != np.uint8:
+            frame8 = cv2.convertScaleAbs(frame, alpha=255.0 / frame.max())
+        else:
+            frame8 = frame
+
+        if frame8.ndim > 2:
+            lab = cv2.cvtColor(frame8, cv2.COLOR_BGR2LAB)
+            l_channel = cv2.split(lab)[0]
+        else:
+            l_channel = frame8
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        frame = clahe.apply(l_channel)
+
+    # color management
+    if not isinstance(opts['color_convert'], bool) and len(frame.shape) > 2:
+        frame = cv2.cvtColor(frame, opts['color_convert'])  # noqa
+
+    return frame

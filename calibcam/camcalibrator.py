@@ -19,7 +19,7 @@ from svidreader import filtergraph
 
 from calibcam import helper, camfunctions
 from calibcam import yaml_helper
-from calibcam.calibrator_opts import get_default_opts
+from calibcam.calibrator_opts import get_default_opts, normalize_option_paths
 from calibcam.camfunctions import test_objective_function, make_optim_input
 from calibcam.detection import detect_corners
 from calibcam.exceptions import *
@@ -72,7 +72,9 @@ class CamCalibrator:
             fileopts = np.load(data_path + "/opts.npy", allow_pickle=True).item()
             opts = helper.deepmerge_dicts(opts, fileopts)
 
-        return helper.deepmerge_dicts(opts, get_default_opts(0))
+        return normalize_option_paths(
+            helper.deepmerge_dicts(opts, get_default_opts(0))
+        )
 
     def load_recordings(self, recordings, pipelines=None):
         # TODO check if input files are valid files

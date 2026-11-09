@@ -11,6 +11,11 @@ class DetectionBackend(ABC):
 
     default_opts: ClassVar[dict[str, Any]] = {}
 
+    # Whether calibcam applies its common preprocessing (gamma correction, CLAHE,
+    # color conversion; see detection.preprocess_frame) before detect_frame is called.
+    # Backends that expect raw frames set this to False.
+    uses_preprocessing: ClassVar[bool] = True
+
     @abstractmethod
     def create_context(
         self,

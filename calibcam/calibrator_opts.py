@@ -1,7 +1,21 @@
 import sys
+from pathlib import Path
 
 import cv2
 import numpy as np
+
+
+def normalize_option_paths(value):
+    """Convert Path values to strings without modifying the input."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: normalize_option_paths(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_option_paths(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(normalize_option_paths(item) for item in value)
+    return value
 
 
 def get_default_opts(ncams=0, do_fill=False):
@@ -79,16 +93,6 @@ def get_default_opts(ncams=0, do_fill=False):
 
         'detection_opts': {
             'backend': 'opencv',
-            'nanodeepcharuco': {
-                'project_root': False,
-                'nano_executable': False,
-                'deep_checkpoint': False,
-                'refinenet_checkpoint': False,
-                'config_path': False,
-                'device': False,
-                'work_dir': False,
-                'keep_work': False,
-            },
             'inter_frame_dist': 3.0,  # In pixels
             'min_corners': 5,  # Minimum number of corners to detect in a frame
             'clahe': True,
