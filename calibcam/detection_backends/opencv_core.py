@@ -37,6 +37,10 @@ def detect_frame(frame, frame_idx, context):
     corners, ids, rejected_img_points = detector.detectMarkers(
         frame
     )
+    # corners, ids, rejected_img_points = \
+    #     cv2.aruco.detectMarkers(frame,  # noqa
+    #                             cv2.aruco.getPredefinedDictionary(board_params['dictionary_type']),  # noqa
+    #                             )
 
     if len(corners) == 0:
         return None, None
