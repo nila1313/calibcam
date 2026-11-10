@@ -99,13 +99,11 @@ def detect_corners(rec_file_names, boards, opts, rec_pipelines=None):
     return detections
 
 
-def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None, backend=None):
+def detect_corners_cam(video, opts, board: Board, frames_list, rec_pipeline=None, *,
+                       backend: DetectionBackend):
     board_params = board.get_board_params()
     board_start_id = board.get_board_ids()[0]
 
-    if backend is None:
-        backend_name = opts["detection_opts"].get("backend", "opencv")
-        backend = get_detection_backend(backend_name)()
     detection_context = backend.create_context(
         video,
         board,
