@@ -60,15 +60,13 @@ OpenCV remains the default detection backend. NanoDeepCharuco can be selected th
 
 #### Installing the optional backend
 
-Install NanoDeepCharuco into the same Python environment as CalibCam.
-For now, use the published plugin branch:
+NanoDeepCharuco is provided by the separate
+[NanoDeepChArUco](https://github.com/nila1313/NanoDeepChArUco) package.
+Install it into the same Python environment as CalibCam as described in its
+README. It registers itself as a CalibCam detection backend; check with:
 
 ```bash
-git clone --recurse-submodules \
-  --branch feature/calibcam-detection-plugin \
-  https://github.com/nila1313/NanoDeepChArUco.git
-python -m pip install -e "./NanoDeepChArUco[nanodeepcharuco]"
-python -c 'from calibcam.detection_backends import available; assert "nanodeepcharuco" in available(); print(available())'
+python -c 'from calibcam.detection_backends import available; print(available())'
 ```
 
 The Nano executable, DeepChArUco checkpoints, and configuration files
