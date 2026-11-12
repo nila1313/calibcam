@@ -1,5 +1,5 @@
+import logging
 import multiprocessing
-from copy import deepcopy
 from pathlib import Path
 
 import cv2
@@ -13,24 +13,22 @@ from calibcam import camfunctions, helper
 from calibcam.detection_backends import DetectionBackend, get_detection_backend
 from calibcamlib import Board, Detections
 
+logger = logging.getLogger(__name__)
+
 
 def detect_corners(rec_file_names, boards, opts, rec_pipelines=None):
     print('DETECTING FEATURES')
     backend_name = opts["detection_opts"].get("backend", "opencv")
-    backend_class = get_detection_backend(backend_name)
-    if not isinstance(backend_class, type) or not issubclass(
-        backend_class, DetectionBackend
-    ):
-        raise TypeError(f"Invalid detection backend: {backend_name!r}")
-    backend = backend_class()
-    if backend_class.default_opts:
-        detection_opts = dict(opts["detection_opts"])
-        detection_opts[backend_name] = helper.deepmerge_dicts(
-            deepcopy(detection_opts.get(backend_name, {})),
-            deepcopy(backend_class.default_opts),
-        )
-        opts = dict(opts)
-        opts["detection_opts"] = detection_opts
+    backend = get_detection_backend(backend_name)()
+    if not backend.uses_preprocessing:
+        ignored = [name for name, enabled in (
+            ("clahe", opts["detection_opts"]["clahe"]),
+            ("gamma_correction", opts.get("gamma_correction", None) is not None),
+            ("color_convert", not isinstance(opts["color_convert"], bool)),
+        ) if enabled]
+        if ignored:
+            logger.warning(f"Detection backend {backend_name!r} works on raw frames, "
+                           f"ignoring preprocessing options: {', '.join(ignored)}")
 
     if isinstance(opts['frames_offsets'], bool):
         frames_offsets = np.zeros(len(rec_file_names))

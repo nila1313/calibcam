@@ -1,5 +1,8 @@
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from calibcamlib import Detections
 
 from calibcam.detection_backends import (
     DetectionBackend,
@@ -23,44 +26,53 @@ class TestDetectionBackends(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown detection backend"):
             get_detection_backend("unknown_test_backend")
 
-    def test_opencv_forwards_calls(self):
+    def test_non_backend_entry_point_is_rejected(self):
+        class NotABackend:
+            pass
+
+        entry_point = MagicMock()
+        entry_point.load.return_value = NotABackend
+        with patch(
+            "calibcam.detection_backends.entry_points", return_value=[entry_point]
+        ) as find:
+            with self.assertRaisesRegex(TypeError, "does not implement DetectionBackend"):
+                get_detection_backend("not_a_backend")
+        find.assert_called_once_with(
+            group="calibcam.detection_backends", name="not_a_backend"
+        )
+
+    def test_opencv_detector_is_built_once_per_video(self):
+        import cv2
+        import numpy as np
+
+        from calibcam.calibrator_opts import get_default_opts
+        from calibcamlib import Board
+
+        root = Path(__file__).resolve().parents[1]
+        board = Board(np.load(root / "boards/bboboard-v4.npy", allow_pickle=True).item())
+        opts = get_default_opts(1, do_fill=True)
         backend = get_detection_backend("opencv")()
-        board = object()
-        opts = {}
-        context = {"ready": True}
+        frame = cv2.imread(str(root / "tests/sample_images_1/1295.png"))
 
-        with patch(
-            "calibcam.detection_backends.opencv.opencv_core.create_context",
-            return_value=context,
-        ) as create:
-            self.assertIs(backend.create_context("test.mp4", board, opts), context)
-            create.assert_called_once_with("test.mp4", board, opts)
+        with patch.object(
+            cv2.aruco, "ArucoDetector", wraps=cv2.aruco.ArucoDetector
+        ) as make_detector:
+            context = backend.create_context("sample", board, opts)
+            for frame_idx in range(3):
+                backend.detect_frame(frame, frame_idx, context)
+        make_detector.assert_called_once()
 
-        frame = object()
-        with patch(
-            "calibcam.detection_backends.opencv.opencv_core.detect_frame",
-            return_value=(None, None),
-        ) as detect:
-            self.assertEqual(backend.detect_frame(frame, 12, context), (None, None))
-            detect.assert_called_once_with(frame, 12, context)
-
-    def test_backend_defaults_are_merged_without_mutation(self):
+    def test_detect_corners_only_resolves_and_instantiates(self):
         from copy import deepcopy
 
         from calibcam import detection
         from calibcamlib import Detections
 
         class CustomBackend(get_detection_backend("opencv")):
-            default_opts = {
-                "work_dir": "default",
-                "nested": {"a": 1, "b": 2},
-            }
+            default_opts = {"work_dir": "default"}
 
         opts = {
-            "detection_opts": {
-                "backend": "custom",
-                "custom": {"work_dir": "user", "nested": {"b": 9}},
-            },
+            "detection_opts": {"backend": "custom", "custom": {"work_dir": "user"}},
             "frames_offsets": False,
             "frames_lists": False,
             "frames_start": 0,
@@ -69,7 +81,6 @@ class TestDetectionBackends(unittest.TestCase):
             "parallelize": False,
         }
         original_opts = deepcopy(opts)
-        original_defaults = deepcopy(CustomBackend.default_opts)
 
         with (
             patch.object(
@@ -88,15 +99,83 @@ class TestDetectionBackends(unittest.TestCase):
         resolve.assert_called_once_with("custom")
         self.assertEqual(worker.call_count, 2)
         calls = worker.call_args_list
+        self.assertIsInstance(calls[0].kwargs["backend"], CustomBackend)
         self.assertIs(calls[0].kwargs["backend"], calls[1].kwargs["backend"])
         for call in calls:
-            selected = call.args[1]["detection_opts"]["custom"]
-            self.assertEqual(selected["work_dir"], "user")
-            self.assertEqual(selected["nested"], {"a": 1, "b": 9})
-            self.assertIsNot(call.args[1], opts)
-
+            self.assertIs(call.args[1], opts)  # opts are passed through unchanged
         self.assertEqual(opts, original_opts)
+
+    def test_build_options_merges_backend_defaults_into_written_opts(self):
+        import tempfile
+        from importlib import import_module
+        from types import SimpleNamespace
+
+        import yaml
+
+        cli = import_module("calibcam.__main__")
+
+        class CustomBackend(get_detection_backend("opencv")):
+            default_opts = {
+                "work_dir": "default",
+                "nested": {"a": 1, "b": 2},
+            }
+
+        original_defaults = {"work_dir": "default", "nested": {"a": 1, "b": 2}}
+        opts = {
+            "detection_opts": {
+                "backend": "custom",
+                "custom": {"work_dir": Path("/tmp/user"), "nested": {"b": 9}},
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as write_dir:
+            args = SimpleNamespace(opts=[], write_opts=[write_dir])
+            with (
+                patch.object(cli, "build_args_into_opts", return_value=opts),
+                patch.object(cli, "get_detection_backend", return_value=CustomBackend) as resolve,
+            ):
+                result = cli.build_options(args, n_cams=2)
+            with open(Path(write_dir) / "opts.yml") as file:
+                written = yaml.safe_load(file)
+
+        resolve.assert_called_once_with("custom")
+        expected = {"work_dir": "/tmp/user", "nested": {"a": 1, "b": 9}}
+        self.assertEqual(result["detection_opts"]["custom"], expected)
+        self.assertEqual(written["detection_opts"]["custom"], expected)
         self.assertEqual(CustomBackend.default_opts, original_defaults)
+
+    def test_warning_when_backend_skips_enabled_preprocessing(self):
+        from calibcam import detection
+        from calibcam.calibrator_opts import get_default_opts
+
+        class RawBackend(get_detection_backend("opencv")):
+            uses_preprocessing = False
+
+        opts = get_default_opts(1, do_fill=True)  # CLAHE is on by default
+        opts["parallelize"] = False
+
+        def run(expect_warning):
+            with (
+                patch.object(detection, "get_detection_backend", return_value=RawBackend),
+                patch.object(detection, "detect_corners_cam", return_value=Detections()),
+                patch.object(detection.filtergraph, "get_reader", return_value=object()),
+                patch.object(detection.camfunctions, "get_n_frames_from_reader",
+                             return_value=1),
+            ):
+                if expect_warning:
+                    with self.assertLogs(detection.logger, level="WARNING") as logs:
+                        detection.detect_corners(["video.mp4"], [object()], opts)
+                    return logs.output
+                with self.assertNoLogs(detection.logger, level="WARNING"):
+                    detection.detect_corners(["video.mp4"], [object()], opts)
+                return []
+
+        output = run(expect_warning=True)
+        self.assertEqual(len(output), 1)
+        self.assertIn("clahe", output[0])
+
+        opts["detection_opts"]["clahe"] = False
+        run(expect_warning=False)
 
     def test_injected_backend_frame_is_stored(self):
         import numpy as np
@@ -160,6 +239,9 @@ class TestPreprocessing(unittest.TestCase):
         received = []
 
         class SpyBackend(get_detection_backend("opencv")):
+            def create_context(self, video, board, opts):
+                return {}
+
             def detect_frame(self, frame, frame_idx, context):
                 received.append(frame)
                 return (

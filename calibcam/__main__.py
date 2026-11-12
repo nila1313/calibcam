@@ -2,6 +2,7 @@
 
 import argparse
 import timeit
+from copy import deepcopy
 from pathlib import Path
 import logging
 
@@ -10,6 +11,7 @@ import yaml
 
 from calibcam import calibrator_opts, helper, yaml_helper, __version__
 from calibcam.camcalibrator import CamCalibrator
+from calibcam.detection_backends import get_detection_backend
 from calibcamlib import Camerasystem, Board
 
 logging.basicConfig(level=logging.INFO)
@@ -312,6 +314,16 @@ def build_options(args, n_cams):
         opts = helper.deepmerge_dicts(file_opts, opts)
 
     opts = build_args_into_opts(opts, args, n_cams)
+
+    # Add the default options of the selected detection backend
+    backend_name = opts["detection_opts"].get("backend", "opencv")
+    backend_class = get_detection_backend(backend_name)
+    if backend_class.default_opts:
+        opts["detection_opts"][backend_name] = helper.deepmerge_dicts(
+            opts["detection_opts"].get(backend_name, {}),
+            deepcopy(backend_class.default_opts),
+        )
+
     opts = calibrator_opts.normalize_option_paths(opts)
 
     # Write options to file for later editing.

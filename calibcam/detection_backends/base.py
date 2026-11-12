@@ -1,14 +1,20 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 
 import numpy as np
-from calibcamlib import Board
+
+if TYPE_CHECKING:
+    from calibcamlib import Board
 
 
 class DetectionBackend(ABC):
     """Interface for ChArUco detection backends."""
 
+    # Backend-specific default options. They are merged into
+    # opts["detection_opts"][<backend name>] when the options are built.
     default_opts: ClassVar[dict[str, Any]] = {}
 
     # Whether calibcam applies its common preprocessing (gamma correction, CLAHE,

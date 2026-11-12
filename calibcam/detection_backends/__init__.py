@@ -14,10 +14,15 @@ def available() -> list[str]:
 def get_detection_backend(name: str) -> type[DetectionBackend]:
     if name in _BUILTIN:
         module, cls = _BUILTIN[name].split(":")
-        return getattr(importlib.import_module(module), cls)
+        backend_class = getattr(importlib.import_module(module), cls)
+    else:
+        for ep in entry_points(group=GROUP, name=name):
+            backend_class = ep.load()
+            break
+        else:
+            raise ValueError(f"Unknown detection backend {name!r}; available: {available()}")
 
-    for ep in entry_points(group=GROUP):
-        if ep.name == name:
-            return ep.load()
+    if not (isinstance(backend_class, type) and issubclass(backend_class, DetectionBackend)):
+        raise TypeError(f"Detection backend {name!r} does not implement DetectionBackend")
 
-    raise ValueError(f"Unknown detection backend {name!r}; available: {available()}")
+    return backend_class

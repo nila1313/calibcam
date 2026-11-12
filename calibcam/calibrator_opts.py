@@ -1,14 +1,14 @@
+import os
 import sys
-from pathlib import Path
 
 import cv2
 import numpy as np
 
 
 def normalize_option_paths(value):
-    """Convert Path values to strings without modifying the input."""
-    if isinstance(value, Path):
-        return str(value)
+    """Convert path-like values to strings without modifying the input."""
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
     if isinstance(value, dict):
         return {key: normalize_option_paths(item) for key, item in value.items()}
     if isinstance(value, list):

@@ -80,6 +80,7 @@ Example `nanodeep_opts.yml`:
 ```yaml
 detection_opts:
   backend: nanodeepcharuco
+  clahe: false  # NanoDeepCharuco works on raw frames
   nanodeepcharuco:
     project_root: /path/to/NanoDeepChArUco
     nano_executable: /path/to/detect_batch
